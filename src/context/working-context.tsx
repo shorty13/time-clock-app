@@ -1,16 +1,16 @@
-import { useLiveDate } from "@/hooks/useLiveDate"
-import { secondsToTime, timeToSeconds } from "@/lib/times"
-import { createContext, ReactNode, useMemo, useState } from "react"
+import { convertDateToLocalDateString, timeToSeconds } from "@/lib/times"
+import { createContext, ReactNode, RefObject, useCallback, useMemo, useRef, useState } from "react"
 
 type WorkingContexProps = {
     isWorking: boolean
     logs: LogsObjectProps[]
-    timeWorked: string
+    timeWorkedRef: RefObject<number>
+    breaksRef: RefObject<number>
     handlePress: (complete: boolean) => void
 }
 
-type LogsObjectProps = {
-    status: string
+export type LogsObjectProps = {
+    status: 'Start' | 'Weiter' | 'Pause' | 'Ende'
     date: string
     timeLog: string
 }
@@ -18,79 +18,65 @@ type LogsObjectProps = {
 export const WorkingContext = createContext<WorkingContexProps>({
     isWorking: false,
     logs: [],
-    timeWorked: '',
+    timeWorkedRef: { current: 0 },
+    breaksRef: { current: 0 },
     handlePress: () => {}
 })
 
-// Context for relevant states -> updates every second cause of the useLiveDate Hook, need better solution
-
+// Context for relevant states 
 export const WorkingProvider = ({ children }: { children: ReactNode }) => {
-    const [isWorking, setIsWorking] = useState(false) // determines if the clock runs or not
-    const [isComplete, setIsComplete] = useState(false) // determines if the day is closed or not
+    const [isWorking, setIsWorking] = useState(false) // shows if the clock is running or not
     const [logs, setLogs] = useState<LogsObjectProps[]>([]) // contains all logs made during current day
-    const [timeWorked, setTimeWorked] = useState('00:00:00') // containes calculated working time
-    const now = useLiveDate() // live date hook => updates every second
+    const timeWorkedRef = useRef(0)// containes calculated working time
+    const breaksRef = useRef(0) // containes calculated break time
+
+    const mapTimeArrays = useCallback((array1: LogsObjectProps[], array2: LogsObjectProps[]) => {
+        return (
+            array1.length !== 0 ? (
+                array1.map(({ timeLog }, i) => {
+                    const sec1 = timeToSeconds(timeLog)
+                    const sec2 = timeToSeconds(array1.length === array2.length ? 
+                        array2[i].timeLog : array2.slice(0, array1.length)[i].timeLog
+                    )
+                    return Math.abs(sec1 - sec2)
+                })
+            ) : [0]
+        )
+    }, [])
     
-    const dateArray = now.toLocaleDateString('de', {
-        day: '2-digit',
-        month: 'short',
-        year: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: 'numeric',
-    }).split(',') // array contains date and time
-
-
-    const logsObject = {
-        status: !isWorking ? logs.length === 0 ? 'Start' : 'Weiter' : 'Pause',
-        date: dateArray[0].trim(),
-        timeLog: dateArray[1].trim()
-    } // object to save logs
-
     // will be called when start- or end-button is pressed
-    const handlePress = (complete: boolean) => {
-        if (isComplete) return // return if day is complete
+    const handlePress = useCallback((complete: boolean) => {
+        if (complete && !isWorking) return
+
+        const dateArray = convertDateToLocalDateString(new Date()) // array contains date and time
+        const logsObject: LogsObjectProps = {
+            status: logs.length === 0 ? 'Start' : !isWorking ? 'Weiter' : complete ? 'Ende' : 'Pause',
+            date: dateArray[0].trim(),
+            timeLog: dateArray[1].trim()
+        } // object to save logs
 
         // create arrays for calculations
         const newLogs = [...logs, logsObject]
-        const start = newLogs.filter((_, i ) => i % 2 !== 0)
-        const end = newLogs.filter((_, i ) => i % 2 === 0)
-        const times = start.map((startTime, i) => {
-            return Math.abs(timeToSeconds(startTime.timeLog) - timeToSeconds(end[i].timeLog))
-        })
+        const startWorking = newLogs.filter((_, i ) => i % 2 === 0)
+        const startBreak = newLogs.filter((_, i ) => i % 2 !== 0)
+        const endBreak = newLogs.filter((_, i) => i % 2 === 0 && i !== 0)
+        const timesWorked = mapTimeArrays(startBreak, startWorking)
+        const breaks =  mapTimeArrays(endBreak, startBreak)
 
-        // adding all seconds within the array
-        const timesReduced = times.reduce((acc, mod) => acc + mod, 0)
-
-        // bool determines which button was presst -> complete ? end-button : start-button
-        if (complete) {
-            setIsWorking(false)
-            setIsComplete(true)
-            setLogs(prev => {
-                return [...prev, {
-                    ...logsObject,
-                    status: 'Ende'
-                }]
-            })
-            setTimeWorked(secondsToTime(timesReduced))
-            return
-        }
+        // adding all seconds within the arrays
+        const timesWorked_Reduced = timesWorked.reduce((acc, mod) => acc + mod, 0)
+        const breaks_Reduced = breaks.reduce((acc, mod) => acc + mod, 0)
 
         setLogs(newLogs)
-        setIsWorking(prev => !prev)
-        setTimeWorked(secondsToTime(timesReduced))
-    }
-    
-    const values = useMemo(() =>  ({ 
-        isWorking, 
-        handlePress,
-        timeWorked,
-        logs, 
-    }), [
-        isWorking, 
-        handlePress, 
-        timeWorked,
-        logs,
+        setIsWorking(prev => complete ? false : !prev)
+        timeWorkedRef.current = timesWorked_Reduced
+        breaksRef.current = breaks_Reduced
+    }, [isWorking, logs, timeWorkedRef.current, breaksRef.current, ])
+
+    const values = useMemo(() => ({ 
+        isWorking,  handlePress, timeWorkedRef, breaksRef, logs, 
+    }), [ 
+        isWorking,  handlePress, logs,
     ])
 
     return (
